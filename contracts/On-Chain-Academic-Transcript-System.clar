@@ -11,6 +11,11 @@
 (define-data-var transcript-counter uint u0)
 (define-data-var current-transcript-id uint u0)
 
+(define-constant ERR_BADGE_NOT_FOUND (err u106))
+(define-constant ERR_DUPLICATE_BADGE (err u107))
+
+(define-data-var badge-counter uint u0)
+
 (define-map verified-institutions principal bool)
 (define-map transcript-data uint {
     student: principal,
@@ -273,4 +278,80 @@
             issued-at: (get issued-at transcript-info)
         })
     )
+)
+
+(define-map achievement-badges uint {
+    transcript-id: uint,
+    badge-type: (string-ascii 30),
+    description: (string-ascii 100),
+    issued-by: principal,
+    issued-at: uint
+})
+
+(define-map student-badges principal (list 30 uint))
+(define-map transcript-badges uint (list 15 uint))
+
+(define-public (issue-achievement-badge 
+    (transcript-id uint)
+    (badge-type (string-ascii 30))
+    (description (string-ascii 100))
+)
+    (let (
+        (badge-id (+ (var-get badge-counter) u1))
+        (transcript-info (unwrap! (get-transcript-data transcript-id) ERR_TRANSCRIPT_NOT_FOUND))
+        (student (get student transcript-info))
+        (current-block stacks-block-height)
+    )
+        (asserts! (is-eq tx-sender (get institution transcript-info)) ERR_NOT_AUTHORIZED)
+        (asserts! (is-verified-institution tx-sender) ERR_INSTITUTION_NOT_VERIFIED)
+        
+        (map-set achievement-badges badge-id {
+            transcript-id: transcript-id,
+            badge-type: badge-type,
+            description: description,
+            issued-by: tx-sender,
+            issued-at: current-block
+        })
+        
+        (map-set student-badges student
+            (unwrap-panic (as-max-len?
+                (append (default-to (list) (map-get? student-badges student)) badge-id)
+                u30
+            ))
+        )
+        
+        (map-set transcript-badges transcript-id
+            (unwrap-panic (as-max-len?
+                (append (default-to (list) (map-get? transcript-badges transcript-id)) badge-id)
+                u15
+            ))
+        )
+        
+        (var-set badge-counter badge-id)
+        (ok badge-id)
+    )
+)
+
+(define-read-only (get-badge-details (badge-id uint))
+    (map-get? achievement-badges badge-id)
+)
+
+(define-read-only (get-student-badges (student principal))
+    (map-get? student-badges student)
+)
+
+(define-read-only (get-transcript-badges (transcript-id uint))
+    (map-get? transcript-badges transcript-id)
+)
+
+(define-public (get-student-achievements (student principal))
+    (let (
+        (badge-ids (default-to (list) (get-student-badges student)))
+    )
+        (ok (map get-badge-info badge-ids))
+    )
+)
+
+(define-private (get-badge-info (badge-id uint))
+    (unwrap-panic (get-badge-details badge-id))
 )
