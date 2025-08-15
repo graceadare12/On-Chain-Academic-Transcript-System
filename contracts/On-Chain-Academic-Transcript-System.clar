@@ -355,3 +355,100 @@
 (define-private (get-badge-info (badge-id uint))
     (unwrap-panic (get-badge-details badge-id))
 )
+
+(define-map merit-scores principal {
+    gpa-score: uint,
+    credit-score: uint,
+    badge-score: uint,
+    total-score: uint,
+    last-updated: uint
+})
+
+(define-map degree-weight-multipliers (string-ascii 50) uint)
+
+(define-public (initialize-degree-weights)
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+        (map-set degree-weight-multipliers "PhD" u150)
+        (map-set degree-weight-multipliers "Master's" u125)
+        (map-set degree-weight-multipliers "Bachelor's" u100)
+        (map-set degree-weight-multipliers "Associate" u75)
+        (ok true)
+    )
+)
+
+(define-private (calculate-gpa-score (gpa uint) (degree-type (string-ascii 50)))
+    (let (
+        (base-score (* gpa u25))
+        (weight-multiplier (default-to u100 (map-get? degree-weight-multipliers degree-type)))
+    )
+        (/ (* base-score weight-multiplier) u100)
+    )
+)
+
+(define-private (calculate-credit-score (credits uint))
+    (if (>= credits u120)
+        u1000
+        (if (>= credits u90)
+            u750
+            (if (>= credits u60)
+                u500
+                (if (>= credits u30)
+                    u250
+                    u100
+                )
+            )
+        )
+    )
+)
+
+(define-private (calculate-badge-score (badge-count uint))
+    (* badge-count u200)
+)
+
+(define-public (update-merit-score (student principal))
+    (let (
+        (transcript-ids (default-to (list) (get-student-transcripts student)))
+        (badge-ids (default-to (list) (get-student-badges student)))
+        (current-block stacks-block-height)
+    )
+        (if (> (len transcript-ids) u0)
+            (let (
+                (latest-transcript-id (unwrap-panic (element-at transcript-ids (- (len transcript-ids) u1))))
+                (transcript-info (unwrap-panic (get-transcript-data latest-transcript-id)))
+                (gpa-score (calculate-gpa-score (get gpa transcript-info) (get degree-type transcript-info)))
+                (credit-score (calculate-credit-score (get credits transcript-info)))
+                (badge-score (calculate-badge-score (len badge-ids)))
+                (total-score (+ gpa-score (+ credit-score badge-score)))
+            )
+                (ok (map-set merit-scores student {
+                    gpa-score: gpa-score,
+                    credit-score: credit-score,
+                    badge-score: badge-score,
+                    total-score: total-score,
+                    last-updated: current-block
+                }))
+            )
+            (ok false)
+        )
+    )
+)
+
+(define-read-only (get-merit-score (student principal))
+    (map-get? merit-scores student)
+)
+
+(define-read-only (compare-merit-scores (student1 principal) (student2 principal))
+    (let (
+        (score1 (default-to {gpa-score: u0, credit-score: u0, badge-score: u0, total-score: u0, last-updated: u0} (get-merit-score student1)))
+        (score2 (default-to {gpa-score: u0, credit-score: u0, badge-score: u0, total-score: u0, last-updated: u0} (get-merit-score student2)))
+    )
+        {
+            student1: student1,
+            student2: student2,
+            student1-score: (get total-score score1),
+            student2-score: (get total-score score2),
+            winner: (if (> (get total-score score1) (get total-score score2)) student1 student2)
+        }
+    )
+)
