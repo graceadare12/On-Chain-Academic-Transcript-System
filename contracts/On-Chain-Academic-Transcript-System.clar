@@ -8,6 +8,13 @@
 (define-constant ERR_NOT_OWNER (err u104))
 (define-constant ERR_INSTITUTION_NOT_VERIFIED (err u105))
 
+(define-constant ERR_SCHOLARSHIP_NOT_FOUND (err u108))
+(define-constant ERR_NOT_ELIGIBLE (err u109))
+(define-constant ERR_ALREADY_APPLIED (err u110))
+(define-constant ERR_INSUFFICIENT_FUNDS (err u111))
+
+(define-data-var scholarship-counter uint u0)
+
 (define-data-var transcript-counter uint u0)
 (define-data-var current-transcript-id uint u0)
 
@@ -451,4 +458,115 @@
             winner: (if (> (get total-score score1) (get total-score score2)) student1 student2)
         }
     )
+)
+
+
+(define-map scholarships uint {
+    name: (string-ascii 50),
+    sponsor: principal,
+    amount: uint,
+    min-merit-score: uint,
+    degree-requirement: (string-ascii 50),
+    deadline: uint,
+    awarded-to: (optional principal),
+    created-at: uint
+})
+
+(define-map student-applications principal (list 20 uint))
+(define-map scholarship-applicants uint (list 50 principal))
+
+(define-public (create-scholarship 
+    (name (string-ascii 50))
+    (amount uint)
+    (min-merit-score uint)
+    (degree-requirement (string-ascii 50))
+    (deadline uint)
+)
+    (let (
+        (scholarship-id (+ (var-get scholarship-counter) u1))
+        (current-block stacks-block-height)
+    )
+        (asserts! (is-verified-institution tx-sender) ERR_INSTITUTION_NOT_VERIFIED)
+        (asserts! (> deadline current-block) ERR_INVALID_GRADE)
+        
+        (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+        
+        (map-set scholarships scholarship-id {
+            name: name,
+            sponsor: tx-sender,
+            amount: amount,
+            min-merit-score: min-merit-score,
+            degree-requirement: degree-requirement,
+            deadline: deadline,
+            awarded-to: none,
+            created-at: current-block
+        })
+        
+        (var-set scholarship-counter scholarship-id)
+        (ok scholarship-id)
+    )
+)
+
+(define-public (apply-for-scholarship (scholarship-id uint))
+    (let (
+        (scholarship-info (unwrap! (map-get? scholarships scholarship-id) ERR_SCHOLARSHIP_NOT_FOUND))
+        (student-merit (unwrap! (get-merit-score tx-sender) ERR_NOT_ELIGIBLE))
+        (student-transcript-list (default-to (list) (get-student-transcripts tx-sender)))
+        (current-applications (default-to (list) (map-get? student-applications tx-sender)))
+    )
+        (asserts! (> (get deadline scholarship-info) stacks-block-height) ERR_NOT_AUTHORIZED)
+        (asserts! (is-none (get awarded-to scholarship-info)) ERR_ALREADY_EXISTS)
+        (asserts! (>= (get total-score student-merit) (get min-merit-score scholarship-info)) ERR_NOT_ELIGIBLE)
+        (asserts! (> (len student-transcript-list) u0) ERR_NOT_ELIGIBLE)
+        (asserts! (is-none (index-of current-applications scholarship-id)) ERR_ALREADY_APPLIED)
+        
+        (map-set student-applications tx-sender
+            (unwrap-panic (as-max-len? (append current-applications scholarship-id) u20))
+        )
+        
+        (map-set scholarship-applicants scholarship-id
+            (unwrap-panic (as-max-len?
+                (append (default-to (list) (map-get? scholarship-applicants scholarship-id)) tx-sender)
+                u50
+            ))
+        )
+        
+        (ok true)
+    )
+)
+
+(define-public (award-scholarship (scholarship-id uint) (recipient principal))
+    (let (
+        (scholarship-info (unwrap! (map-get? scholarships scholarship-id) ERR_SCHOLARSHIP_NOT_FOUND))
+    )
+        (asserts! (is-eq tx-sender (get sponsor scholarship-info)) ERR_NOT_AUTHORIZED)
+        (asserts! (is-none (get awarded-to scholarship-info)) ERR_ALREADY_EXISTS)
+        
+        (try! (as-contract (stx-transfer? (get amount scholarship-info) tx-sender recipient)))
+        
+        (map-set scholarships scholarship-id (merge scholarship-info {awarded-to: (some recipient)}))
+        (ok true)
+    )
+)
+
+(define-read-only (get-scholarship-details (scholarship-id uint))
+    (map-get? scholarships scholarship-id)
+)
+
+(define-read-only (get-active-scholarships)
+    (ok (var-get scholarship-counter))
+)
+
+(define-private (is-scholarship-active (scholarship-id uint))
+    (match (map-get? scholarships scholarship-id)
+        scholarship-info (and 
+            (is-none (get awarded-to scholarship-info))
+            (> (get deadline scholarship-info) stacks-block-height)
+        )
+        false
+    )
+)
+
+(define-read-only (get-student-applications (student principal))
+    (map-get? student-applications student)
 )
