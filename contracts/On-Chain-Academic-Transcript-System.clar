@@ -570,3 +570,80 @@
 (define-read-only (get-student-applications (student principal))
     (map-get? student-applications student)
 )
+
+
+(define-map transcript-status uint {
+    revoked: bool,
+    reason: (string-ascii 100),
+    updated-at: uint
+})
+
+(define-public (set-transcript-status 
+    (transcript-id uint) 
+    (is-revoked bool) 
+    (reason (string-ascii 100))
+)
+    (let (
+        (transcript-info (unwrap! (get-transcript-data transcript-id) ERR_TRANSCRIPT_NOT_FOUND))
+        (issuing-institution (get institution transcript-info))
+        (current-block stacks-block-height)
+    )
+        (asserts! (is-eq tx-sender issuing-institution) ERR_NOT_AUTHORIZED)
+        (asserts! (is-verified-institution tx-sender) ERR_INSTITUTION_NOT_VERIFIED)
+        
+        (ok (map-set transcript-status transcript-id {
+            revoked: is-revoked,
+            reason: reason,
+            updated-at: current-block
+        }))
+    )
+)
+
+(define-read-only (get-transcript-status (transcript-id uint))
+    (map-get? transcript-status transcript-id)
+)
+
+(define-public (verify-transcript-v2 (transcript-id uint))
+    (let (
+        (transcript-info (unwrap! (get-transcript-data transcript-id) ERR_TRANSCRIPT_NOT_FOUND))
+        (issuing-institution (get institution transcript-info))
+        (status-data (default-to {revoked: false, reason: "", updated-at: u0} 
+            (get-transcript-status transcript-id)))
+        (institution-verified (is-verified-institution issuing-institution))
+        (is-revoked (get revoked status-data))
+        (is-currently-valid (and institution-verified (not is-revoked)))
+    )
+        (ok {
+            transcript-id: transcript-id,
+            is-valid: is-currently-valid,
+            institution: issuing-institution,
+            institution-verified: institution-verified,
+            student: (get student transcript-info),
+            issued-at: (get issued-at transcript-info),
+            revoked: is-revoked,
+            revocation-reason: (get reason status-data),
+            status-updated-at: (get updated-at status-data)
+        })
+    )
+)
+
+(define-public (bulk-verify-transcripts-v2 (transcript-ids (list 10 uint)))
+    (ok (map verify-transcript-status transcript-ids))
+)
+
+(define-private (verify-transcript-status (transcript-id uint))
+    (let (
+        (transcript-info (unwrap-panic (get-transcript-data transcript-id)))
+        (issuing-institution (get institution transcript-info))
+        (status-data (default-to {revoked: false, reason: "", updated-at: u0} 
+            (get-transcript-status transcript-id)))
+        (institution-verified (is-verified-institution issuing-institution))
+        (is-revoked (get revoked status-data))
+    )
+        {
+            transcript-id: transcript-id,
+            is-valid: (and institution-verified (not is-revoked)),
+            revoked: is-revoked
+        }
+    )
+)
