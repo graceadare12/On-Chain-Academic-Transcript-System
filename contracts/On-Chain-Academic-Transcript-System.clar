@@ -13,6 +13,12 @@
 (define-constant ERR_ALREADY_APPLIED (err u110))
 (define-constant ERR_INSUFFICIENT_FUNDS (err u111))
 
+(define-constant ERR_SELF_ENDORSEMENT (err u112))
+(define-constant ERR_DUPLICATE_ENDORSEMENT (err u113))
+(define-constant ERR_NO_TRANSCRIPT (err u114))
+
+(define-data-var endorsement-counter uint u0)
+
 (define-data-var scholarship-counter uint u0)
 
 (define-data-var transcript-counter uint u0)
@@ -646,4 +652,91 @@
             revoked: is-revoked
         }
     )
+)
+
+
+(define-map peer-endorsements uint {
+    endorser: principal,
+    endorsee: principal,
+    skill-area: (string-ascii 50),
+    message: (string-ascii 200),
+    endorsed-at: uint
+})
+
+(define-map student-endorsements-received principal (list 40 uint))
+(define-map student-endorsements-given principal (list 40 uint))
+(define-map endorsement-pairs {endorser: principal, endorsee: principal, skill: (string-ascii 50)} bool)
+
+(define-public (endorse-peer 
+    (endorsee principal)
+    (skill-area (string-ascii 50))
+    (message (string-ascii 200))
+)
+    (let (
+        (endorsement-id (+ (var-get endorsement-counter) u1))
+        (current-block stacks-block-height)
+        (endorser-transcripts (default-to (list) (get-student-transcripts tx-sender)))
+        (endorsee-transcripts (default-to (list) (get-student-transcripts endorsee)))
+        (pair-key {endorser: tx-sender, endorsee: endorsee, skill: skill-area})
+    )
+        (asserts! (not (is-eq tx-sender endorsee)) ERR_SELF_ENDORSEMENT)
+        (asserts! (> (len endorser-transcripts) u0) ERR_NO_TRANSCRIPT)
+        (asserts! (> (len endorsee-transcripts) u0) ERR_NO_TRANSCRIPT)
+        (asserts! (is-none (map-get? endorsement-pairs pair-key)) ERR_DUPLICATE_ENDORSEMENT)
+        
+        (map-set peer-endorsements endorsement-id {
+            endorser: tx-sender,
+            endorsee: endorsee,
+            skill-area: skill-area,
+            message: message,
+            endorsed-at: current-block
+        })
+        
+        (map-set endorsement-pairs pair-key true)
+        
+        (map-set student-endorsements-received endorsee
+            (unwrap-panic (as-max-len?
+                (append (default-to (list) (map-get? student-endorsements-received endorsee)) endorsement-id)
+                u40
+            ))
+        )
+        
+        (map-set student-endorsements-given tx-sender
+            (unwrap-panic (as-max-len?
+                (append (default-to (list) (map-get? student-endorsements-given tx-sender)) endorsement-id)
+                u40
+            ))
+        )
+        
+        (var-set endorsement-counter endorsement-id)
+        (ok endorsement-id)
+    )
+)
+
+(define-read-only (get-endorsement-details (endorsement-id uint))
+    (map-get? peer-endorsements endorsement-id)
+)
+
+(define-read-only (get-received-endorsements (student principal))
+    (map-get? student-endorsements-received student)
+)
+
+(define-read-only (get-given-endorsements (student principal))
+    (map-get? student-endorsements-given student)
+)
+
+(define-public (get-student-endorsement-summary (student principal))
+    (let (
+        (endorsement-ids (default-to (list) (get-received-endorsements student)))
+    )
+        (ok {
+            student: student,
+            total-endorsements: (len endorsement-ids),
+            endorsement-details: (map get-endorsement-data endorsement-ids)
+        })
+    )
+)
+
+(define-private (get-endorsement-data (endorsement-id uint))
+    (unwrap-panic (get-endorsement-details endorsement-id))
 )
